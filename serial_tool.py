@@ -53,6 +53,8 @@ RIGHT_PANE_MIN_WIDTH = 280
 APP_DIR_NAME = "SerialTool"
 CONFIG_FILE_NAME = "serial_tool_config.json"
 MAX_DISPLAY_LINES = 30000
+MAX_TEXT_BUFFER_BYTES = 50 * 1024
+TEXT_BUFFER_FLUSH_MS = 200
 
 
 def get_preferred_config_dir() -> str:
@@ -107,6 +109,8 @@ class SerialToolApp:
         self.selected_file_var = tk.StringVar(value="未选择文件")
 
         self.hex_line_open = False
+        self.text_receive_buffer = b""
+        self.text_receive_last_update = 0.0
         self.quick_panel_visible = False
         self.input_panel_visible = True
         self.quick_commands = []
@@ -824,6 +828,7 @@ class SerialToolApp:
         self.reader_running = False
         if self.file_send_in_progress:
             self.file_send_stop_requested = True
+        self._flush_text_receive_buffer()
 
         if self.serial_port is not None:
             try:
@@ -862,10 +867,19 @@ class SerialToolApp:
         while not self.receive_queue.empty():
             message_type, payload = self.receive_queue.get()
             if message_type == "error":
+                self._flush_text_receive_buffer()
                 self.append_output(f"[错误] {payload}\n")
                 self.close_port()
             else:
-                self.append_output(self._format_bytes(payload))
+                self._handle_received_data(payload)
+
+        if (
+            not self.hex_display_var.get()
+            and self.text_receive_buffer
+            and self.text_receive_last_update
+            and (time.monotonic() - self.text_receive_last_update) * 1000 >= TEXT_BUFFER_FLUSH_MS
+        ):
+            self._flush_text_receive_buffer()
 
         self.root.after(100, self.process_incoming_data)
 
@@ -908,6 +922,8 @@ class SerialToolApp:
         self.output_text.delete("1.0", tk.END)
         self.output_text.configure(state=tk.DISABLED)
         self.hex_line_open = False
+        self.text_receive_buffer = b""
+        self.text_receive_last_update = 0.0
         self.output_history.clear()
 
     def clear_input(self) -> None:
@@ -1383,7 +1399,42 @@ class SerialToolApp:
             var.trace_add("write", self._on_config_var_changed)
 
     def _on_config_var_changed(self, *_args) -> None:
+        if self.hex_display_var.get():
+            self._flush_text_receive_buffer()
         self.save_config()
+
+    def _handle_received_data(self, data: bytes) -> None:
+        if self.hex_display_var.get():
+            self._flush_text_receive_buffer()
+            self.append_output(self._format_bytes(data))
+            return
+
+        self.text_receive_buffer += data
+        self.text_receive_last_update = time.monotonic()
+        lines = self.text_receive_buffer.splitlines(keepends=True)
+        pending = b""
+        if lines and not lines[-1].endswith((b"\n", b"\r")):
+            pending = lines.pop()
+
+        for line in lines:
+            formatted = self._format_bytes(line)
+            if formatted:
+                self.append_output(formatted)
+
+        self.text_receive_buffer = pending
+        if len(self.text_receive_buffer) >= MAX_TEXT_BUFFER_BYTES:
+            self._flush_text_receive_buffer()
+
+    def _flush_text_receive_buffer(self) -> None:
+        if not self.text_receive_buffer:
+            return
+
+        buffered = self.text_receive_buffer
+        self.text_receive_buffer = b""
+        self.text_receive_last_update = 0.0
+        formatted = self._decode_text_bytes(buffered)
+        if formatted:
+            self.append_output(formatted)
 
     def _configure_output_tags(self) -> None:
         self.output_text.tag_configure("ansi_default", foreground=TEXT_COLOR)
@@ -1457,9 +1508,12 @@ class SerialToolApp:
         self.hex_line_open = False
 
         try:
-            return data.decode("utf-8", errors="replace")
+            return self._decode_text_bytes(data)
         except Exception:
             return repr(data) + "\n"
+
+    def _decode_text_bytes(self, data: bytes) -> str:
+        return data.decode("utf-8", errors="replace")
 
     def _build_payload(self, raw_text: str, hex_mode: bool) -> bytes:
         if hex_mode:
