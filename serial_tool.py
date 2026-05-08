@@ -92,12 +92,14 @@ class SerialToolApp:
         self.connect_button_var = tk.StringVar(value="打开串口")
         self.quick_panel_button_var = tk.StringVar(value="显示快捷命令")
         self.realtime_log_button_var = tk.StringVar(value="实时保存")
+        self.input_panel_button_var = tk.StringVar(value="▾")
         self.hex_send_var = tk.BooleanVar(value=False)
         self.hex_display_var = tk.BooleanVar(value=False)
         self.autoscroll_var = tk.BooleanVar(value=True)
 
         self.hex_line_open = False
         self.quick_panel_visible = False
+        self.input_panel_visible = True
         self.quick_commands = []
         self.config_loaded = False
         self.output_history = []
@@ -243,16 +245,65 @@ class SerialToolApp:
             style="Tool.TButton",
         ).pack(side=tk.RIGHT)
 
-        input_frame = ttk.LabelFrame(bottom_frame, text="串口输入", style="Panel.TLabelframe", padding=10)
-        input_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        input_frame.configure(height=230)
-        input_frame.grid_propagate(False)
-        input_frame.grid_rowconfigure(0, weight=1)
-        input_frame.grid_rowconfigure(1, weight=0)
-        input_frame.grid_columnconfigure(0, weight=1)
+        self.input_section = ttk.Frame(bottom_frame, style="App.TFrame")
+        self.input_section.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.input_section.grid_columnconfigure(0, weight=1)
+
+        input_header = tk.Frame(
+            self.input_section,
+            bg=PANEL_BG,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            padx=10,
+            pady=6,
+        )
+        input_header.grid(row=0, column=0, sticky="ew")
+        input_header.grid_columnconfigure(0, weight=1)
+
+        tk.Label(
+            input_header,
+            text="串口输入",
+            bg=PANEL_BG,
+            fg=TEXT_COLOR,
+            anchor="w",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        self.input_toggle_button = tk.Button(
+            input_header,
+            textvariable=self.input_panel_button_var,
+            command=self.toggle_input_panel,
+            width=3,
+            bg=BUTTON_BG,
+            fg=TEXT_COLOR,
+            activebackground=SUBTLE_BG,
+            activeforeground=TEXT_COLOR,
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            padx=4,
+            pady=2,
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.input_toggle_button.grid(row=0, column=1, sticky="e")
+
+        self.input_frame = tk.Frame(
+            self.input_section,
+            bg=PANEL_BG,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            padx=10,
+            pady=10,
+            height=230,
+        )
+        self.input_frame.grid(row=1, column=0, sticky="ew")
+        self.input_frame.grid_propagate(False)
+        self.input_frame.grid_rowconfigure(0, weight=1)
+        self.input_frame.grid_rowconfigure(1, weight=0)
+        self.input_frame.grid_columnconfigure(0, weight=1)
 
         self.input_text = ScrolledText(
-            input_frame,
+            self.input_frame,
             wrap=tk.WORD,
             height=5,
             font=("Consolas", 10),
@@ -268,7 +319,7 @@ class SerialToolApp:
         )
         self.input_text.grid(row=0, column=0, sticky="nsew")
 
-        input_toolbar = tk.Frame(input_frame, bg=PANEL_BG, height=44)
+        input_toolbar = tk.Frame(self.input_frame, bg=PANEL_BG, height=44)
         input_toolbar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         input_toolbar.grid_propagate(False)
         input_toolbar.grid_columnconfigure(0, weight=1)
@@ -735,6 +786,17 @@ class SerialToolApp:
             self.quick_panel_button_var.set("隐藏快捷命令")
         self.save_config()
 
+    def toggle_input_panel(self) -> None:
+        if self.input_panel_visible:
+            self.input_frame.grid_remove()
+            self.input_panel_visible = False
+            self.input_panel_button_var.set("▸")
+        else:
+            self.input_frame.grid()
+            self.input_panel_visible = True
+            self.input_panel_button_var.set("▾")
+        self.save_config()
+
     def add_quick_command(self, initial_text: str = "", hex_mode: bool = False, save: bool = True) -> None:
         item = {
             "text_var": tk.StringVar(value=initial_text),
@@ -985,6 +1047,7 @@ class SerialToolApp:
         self.autoscroll_var.set(bool(config.get("autoscroll", True)))
 
         quick_panel_visible = bool(config.get("quick_panel_visible", False))
+        input_panel_visible = bool(config.get("input_panel_visible", True))
         commands = config.get("quick_commands", [])
         if isinstance(commands, list):
             for command in commands:
@@ -997,6 +1060,8 @@ class SerialToolApp:
 
         if quick_panel_visible:
             self.toggle_quick_panel()
+        if not input_panel_visible:
+            self.toggle_input_panel()
 
     def save_config(self) -> None:
         if not self.config_loaded:
@@ -1014,6 +1079,7 @@ class SerialToolApp:
             "hex_display": self.hex_display_var.get(),
             "autoscroll": self.autoscroll_var.get(),
             "quick_panel_visible": self.quick_panel_visible,
+            "input_panel_visible": self.input_panel_visible,
             "quick_commands": [
                 {
                     "text": item["text_var"].get(),
