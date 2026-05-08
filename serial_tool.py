@@ -96,6 +96,7 @@ class SerialToolApp:
         self.hex_send_var = tk.BooleanVar(value=False)
         self.hex_display_var = tk.BooleanVar(value=False)
         self.autoscroll_var = tk.BooleanVar(value=True)
+        self.show_sent_data_var = tk.BooleanVar(value=True)
 
         self.hex_line_open = False
         self.quick_panel_visible = False
@@ -176,6 +177,9 @@ class SerialToolApp:
         ttk.Checkbutton(
             output_toolbar, text="自动滚动", variable=self.autoscroll_var, style="Tool.TCheckbutton"
         ).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            output_toolbar, text="显示发送", variable=self.show_sent_data_var, style="Tool.TCheckbutton"
+        ).pack(side=tk.LEFT, padx=(10, 0))
         ttk.Button(
             output_toolbar,
             textvariable=self.realtime_log_button_var,
@@ -624,7 +628,8 @@ class SerialToolApp:
             return
 
         preview = payload.hex(" ").upper() if hex_mode else raw_text
-        self.append_output(f"[{source_label}] {preview}\n")
+        if self.show_sent_data_var.get():
+            self.append_output(f"[{source_label}] {preview}\n")
 
     def append_output(self, text: str) -> None:
         self.output_history.append(text)
@@ -938,6 +943,7 @@ class SerialToolApp:
             self.hex_send_var,
             self.hex_display_var,
             self.autoscroll_var,
+            self.show_sent_data_var,
         ]
         for var in vars_to_watch:
             var.trace_add("write", self._on_config_var_changed)
@@ -1045,6 +1051,7 @@ class SerialToolApp:
         self.hex_send_var.set(bool(config.get("hex_send", False)))
         self.hex_display_var.set(bool(config.get("hex_display", False)))
         self.autoscroll_var.set(bool(config.get("autoscroll", True)))
+        self.show_sent_data_var.set(bool(config.get("show_sent_data", True)))
 
         quick_panel_visible = bool(config.get("quick_panel_visible", False))
         input_panel_visible = bool(config.get("input_panel_visible", True))
@@ -1078,6 +1085,7 @@ class SerialToolApp:
             "hex_send": self.hex_send_var.get(),
             "hex_display": self.hex_display_var.get(),
             "autoscroll": self.autoscroll_var.get(),
+            "show_sent_data": self.show_sent_data_var.get(),
             "quick_panel_visible": self.quick_panel_visible,
             "input_panel_visible": self.input_panel_visible,
             "quick_commands": [
