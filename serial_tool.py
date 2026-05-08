@@ -51,6 +51,7 @@ LEFT_PANE_MIN_WIDTH = 860
 RIGHT_PANE_MIN_WIDTH = 280
 APP_DIR_NAME = "SerialTool"
 CONFIG_FILE_NAME = "serial_tool_config.json"
+MAX_DISPLAY_LINES = 30000
 
 
 def get_preferred_config_dir() -> str:
@@ -578,6 +579,7 @@ class SerialToolApp:
         self.output_history.append(text)
         self.output_text.configure(state=tk.NORMAL)
         self._insert_ansi_text(text)
+        self._trim_output_lines()
         self.output_text.configure(state=tk.DISABLED)
         self._write_realtime_log(text)
         if self.autoscroll_var.get():
@@ -886,6 +888,16 @@ class SerialToolApp:
         self.output_text.tag_configure("ansi_bold", font=("Consolas", 10, "bold"))
         for code, color in ANSI_COLOR_MAP.items():
             self.output_text.tag_configure(f"ansi_fg_{code}", foreground=color)
+
+    def _trim_output_lines(self) -> None:
+        try:
+            line_count = int(self.output_text.index("end-1c").split(".")[0])
+        except (ValueError, tk.TclError):
+            return
+
+        excess_lines = line_count - MAX_DISPLAY_LINES
+        if excess_lines > 0:
+            self.output_text.delete("1.0", f"{excess_lines + 1}.0")
 
     def _insert_ansi_text(self, text: str) -> None:
         current_tags = ["ansi_default"]
