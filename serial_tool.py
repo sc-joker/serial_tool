@@ -4,7 +4,7 @@ import queue
 import re
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 try:
@@ -90,6 +90,7 @@ class SerialToolApp:
         self.status_var = tk.StringVar(value="未连接")
         self.connect_button_var = tk.StringVar(value="打开串口")
         self.quick_panel_button_var = tk.StringVar(value="显示快捷命令")
+        self.realtime_log_button_var = tk.StringVar(value="实时保存")
         self.hex_send_var = tk.BooleanVar(value=False)
         self.hex_display_var = tk.BooleanVar(value=False)
         self.autoscroll_var = tk.BooleanVar(value=True)
@@ -98,6 +99,9 @@ class SerialToolApp:
         self.quick_panel_visible = False
         self.quick_commands = []
         self.config_loaded = False
+        self.output_history = []
+        self.realtime_log_enabled = False
+        self.realtime_log_path = ""
 
         self._build_ui()
         self.load_config()
@@ -169,6 +173,15 @@ class SerialToolApp:
         ttk.Checkbutton(
             output_toolbar, text="自动滚动", variable=self.autoscroll_var, style="Tool.TCheckbutton"
         ).pack(side=tk.LEFT)
+        ttk.Button(
+            output_toolbar,
+            textvariable=self.realtime_log_button_var,
+            command=self.toggle_realtime_log,
+            style="Tool.TButton",
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(
+            output_toolbar, text="保存当前日志", command=self.save_current_log, style="Tool.TButton"
+        ).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(output_toolbar, text="清空输出", command=self.clear_output, style="Tool.TButton").pack(
             side=tk.RIGHT
         )
@@ -504,6 +517,8 @@ class SerialToolApp:
         self.serial_port = None
         self.status_var.set("未连接")
         self.connect_button_var.set("打开串口")
+        if self.realtime_log_enabled:
+            self.stop_realtime_log(notify=True, reason="串口关闭，已停止实时保存")
         self.save_config()
 
     def toggle_port(self) -> None:
@@ -560,9 +575,11 @@ class SerialToolApp:
         self.append_output(f"[{source_label}] {preview}\n")
 
     def append_output(self, text: str) -> None:
+        self.output_history.append(text)
         self.output_text.configure(state=tk.NORMAL)
         self._insert_ansi_text(text)
         self.output_text.configure(state=tk.DISABLED)
+        self._write_realtime_log(text)
         if self.autoscroll_var.get():
             self.output_text.see(tk.END)
 
@@ -571,9 +588,83 @@ class SerialToolApp:
         self.output_text.delete("1.0", tk.END)
         self.output_text.configure(state=tk.DISABLED)
         self.hex_line_open = False
+        self.output_history.clear()
 
     def clear_input(self) -> None:
         self.input_text.delete("1.0", tk.END)
+
+    def save_current_log(self) -> None:
+        log_path = filedialog.asksaveasfilename(
+            title="保存当前日志",
+            defaultextension=".log",
+            filetypes=[("Log Files", "*.log"), ("Text Files", "*.txt"), ("All Files", "*.*")],
+        )
+        if not log_path:
+            return
+
+        try:
+            with open(log_path, "w", encoding="utf-8") as file:
+                file.write("".join(self.output_history))
+        except OSError as exc:
+            messagebox.showerror("保存失败", f"无法保存日志: {exc}")
+            return
+
+        self.append_output(f"[系统] 当前日志已保存到: {log_path}\n")
+
+    def toggle_realtime_log(self) -> None:
+        if self.realtime_log_enabled:
+            self.stop_realtime_log(notify=True)
+            return
+
+        log_path = filedialog.asksaveasfilename(
+            title="选择实时日志保存文件",
+            defaultextension=".log",
+            filetypes=[("Log Files", "*.log"), ("Text Files", "*.txt"), ("All Files", "*.*")],
+        )
+        if not log_path:
+            return
+
+        try:
+            with open(log_path, "w", encoding="utf-8") as file:
+                file.write("".join(self.output_history))
+        except OSError as exc:
+            messagebox.showerror("保存失败", f"无法启动实时保存: {exc}")
+            return
+
+        self.realtime_log_path = log_path
+        self.realtime_log_enabled = True
+        self.realtime_log_button_var.set("停止实时保存")
+        self.append_output(f"[系统] 已启动实时保存: {log_path}\n")
+
+    def _write_realtime_log(self, text: str) -> None:
+        if not self.realtime_log_enabled or not self.realtime_log_path:
+            return
+
+        try:
+            with open(self.realtime_log_path, "a", encoding="utf-8") as file:
+                file.write(text)
+        except OSError as exc:
+            failed_path = self.realtime_log_path
+            self.stop_realtime_log(notify=False)
+            messagebox.showerror("实时保存失败", f"无法写入日志文件: {exc}")
+            self.output_history.append(f"[系统] 实时保存已停止: {failed_path}\n")
+            self.output_text.configure(state=tk.NORMAL)
+            self._insert_ansi_text(f"[系统] 实时保存已停止: {failed_path}\n")
+            self.output_text.configure(state=tk.DISABLED)
+
+    def stop_realtime_log(self, notify: bool = False, reason: str | None = None) -> None:
+        if not self.realtime_log_enabled and not self.realtime_log_path:
+            self.realtime_log_button_var.set("实时保存")
+            return
+
+        stopped_path = self.realtime_log_path
+        self.realtime_log_enabled = False
+        self.realtime_log_path = ""
+        self.realtime_log_button_var.set("实时保存")
+
+        if notify:
+            message = reason or f"已停止实时保存: {stopped_path}"
+            self.append_output(f"[系统] {message}\n")
 
     def toggle_advanced_settings(self) -> None:
         if self.advanced_window and self.advanced_window.winfo_exists():
