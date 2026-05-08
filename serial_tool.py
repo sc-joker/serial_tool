@@ -3,6 +3,7 @@ import os
 import queue
 import re
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
@@ -93,10 +94,17 @@ class SerialToolApp:
         self.quick_panel_button_var = tk.StringVar(value="显示快捷命令")
         self.realtime_log_button_var = tk.StringVar(value="实时保存")
         self.input_panel_button_var = tk.StringVar(value="▾")
+        self.file_send_button_var = tk.StringVar(value="发送文件")
         self.hex_send_var = tk.BooleanVar(value=False)
         self.hex_display_var = tk.BooleanVar(value=False)
         self.autoscroll_var = tk.BooleanVar(value=True)
         self.show_sent_data_var = tk.BooleanVar(value=True)
+        self.input_mode_var = tk.StringVar(value="command")
+        self.file_send_mode_var = tk.StringVar(value="continuous")
+        self.file_chunk_size_var = tk.StringVar(value="500")
+        self.file_pause_ms_var = tk.StringVar(value="100")
+        self.file_progress_var = tk.StringVar(value="未开始")
+        self.selected_file_var = tk.StringVar(value="未选择文件")
 
         self.hex_line_open = False
         self.quick_panel_visible = False
@@ -106,9 +114,15 @@ class SerialToolApp:
         self.output_history = []
         self.realtime_log_enabled = False
         self.realtime_log_path = ""
+        self.file_send_in_progress = False
+        self.file_send_total_bytes = 0
+        self.selected_file_path = ""
+        self.file_send_stop_requested = False
 
         self._build_ui()
         self.load_config()
+        self.update_file_send_mode()
+        self.update_input_mode()
         self._bind_config_traces()
         self.config_loaded = True
         self.refresh_ports()
@@ -227,7 +241,19 @@ class SerialToolApp:
         self.baud_combo = ttk.Combobox(
             settings_frame,
             textvariable=self.baud_var,
-            values=["9600", "19200", "38400", "57600", "115200", "230400"],
+            values=[
+                "1200",
+                "2400",
+                "4800",
+                "9600",
+                "19200",
+                "38400",
+                "57600",
+                "115200",
+                "230400",
+                "460800",
+                "921600",
+            ],
             width=10,
             style="Tool.TCombobox",
         )
@@ -303,11 +329,52 @@ class SerialToolApp:
         self.input_frame.grid(row=1, column=0, sticky="ew")
         self.input_frame.grid_propagate(False)
         self.input_frame.grid_rowconfigure(0, weight=1)
-        self.input_frame.grid_rowconfigure(1, weight=0)
         self.input_frame.grid_columnconfigure(0, weight=1)
 
+        mode_toolbar = tk.Frame(self.input_frame, bg=PANEL_BG, height=36)
+        mode_toolbar.grid(row=0, column=0, sticky="ew")
+        mode_toolbar.grid_propagate(False)
+
+        tk.Radiobutton(
+            mode_toolbar,
+            text="命令模式",
+            variable=self.input_mode_var,
+            value="command",
+            command=self.update_input_mode,
+            bg=PANEL_BG,
+            fg=TEXT_COLOR,
+            activebackground=PANEL_BG,
+            activeforeground=TEXT_COLOR,
+            selectcolor=SUBTLE_BG,
+            highlightthickness=0,
+            bd=0,
+            font=("Microsoft YaHei UI", 10),
+        ).pack(side=tk.LEFT)
+
+        tk.Radiobutton(
+            mode_toolbar,
+            text="文件模式",
+            variable=self.input_mode_var,
+            value="file",
+            command=self.update_input_mode,
+            bg=PANEL_BG,
+            fg=TEXT_COLOR,
+            activebackground=PANEL_BG,
+            activeforeground=TEXT_COLOR,
+            selectcolor=SUBTLE_BG,
+            highlightthickness=0,
+            bd=0,
+            font=("Microsoft YaHei UI", 10),
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
+        self.command_mode_frame = tk.Frame(self.input_frame, bg=PANEL_BG)
+        self.command_mode_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        self.command_mode_frame.grid_rowconfigure(0, weight=1)
+        self.command_mode_frame.grid_rowconfigure(1, weight=0)
+        self.command_mode_frame.grid_columnconfigure(0, weight=1)
+
         self.input_text = ScrolledText(
-            self.input_frame,
+            self.command_mode_frame,
             wrap=tk.WORD,
             height=5,
             font=("Consolas", 10),
@@ -323,7 +390,7 @@ class SerialToolApp:
         )
         self.input_text.grid(row=0, column=0, sticky="nsew")
 
-        input_toolbar = tk.Frame(self.input_frame, bg=PANEL_BG, height=44)
+        input_toolbar = tk.Frame(self.command_mode_frame, bg=PANEL_BG, height=44)
         input_toolbar.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         input_toolbar.grid_propagate(False)
         input_toolbar.grid_columnconfigure(0, weight=1)
@@ -382,6 +449,191 @@ class SerialToolApp:
             font=("Microsoft YaHei UI", 10),
         )
         self.send_button.pack(side=tk.LEFT)
+
+        self.file_mode_frame = tk.Frame(self.input_frame, bg=PANEL_BG)
+        self.file_mode_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        self.file_mode_frame.grid_columnconfigure(1, weight=1)
+
+        top_file_row = tk.Frame(self.file_mode_frame, bg=PANEL_BG)
+        top_file_row.grid(row=0, column=0, columnspan=2, sticky="ew")
+        top_file_row.grid_columnconfigure(1, weight=1)
+
+        self.choose_file_button = tk.Button(
+            top_file_row,
+            text="选择文件",
+            command=self.choose_binary_file,
+            bg=BUTTON_BG,
+            fg=TEXT_COLOR,
+            activebackground=SUBTLE_BG,
+            activeforeground=TEXT_COLOR,
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            padx=10,
+            pady=5,
+            font=("Microsoft YaHei UI", 10),
+        )
+        self.choose_file_button.grid(row=0, column=0, sticky="w")
+
+        tk.Label(
+            top_file_row,
+            textvariable=self.selected_file_var,
+            bg=PANEL_BG,
+            fg=TEXT_COLOR,
+            anchor="w",
+            font=("Consolas", 9),
+            width=42,
+        ).grid(row=0, column=1, sticky="ew", padx=(10, 0))
+
+        mode_row = tk.Frame(self.file_mode_frame, bg=PANEL_BG)
+        mode_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+        tk.Radiobutton(
+            mode_row,
+            text="连续发送",
+            variable=self.file_send_mode_var,
+            value="continuous",
+            command=self.update_file_send_mode,
+            bg=PANEL_BG,
+            fg=TEXT_COLOR,
+            activebackground=PANEL_BG,
+            activeforeground=TEXT_COLOR,
+            selectcolor=SUBTLE_BG,
+            highlightthickness=0,
+            bd=0,
+            font=("Microsoft YaHei UI", 10),
+        ).pack(side=tk.LEFT)
+
+        tk.Radiobutton(
+            mode_row,
+            text="分块发送",
+            variable=self.file_send_mode_var,
+            value="chunked",
+            command=self.update_file_send_mode,
+            bg=PANEL_BG,
+            fg=TEXT_COLOR,
+            activebackground=PANEL_BG,
+            activeforeground=TEXT_COLOR,
+            selectcolor=SUBTLE_BG,
+            highlightthickness=0,
+            bd=0,
+            font=("Microsoft YaHei UI", 10),
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
+        self.chunk_config_row = tk.Frame(mode_row, bg=PANEL_BG)
+        self.chunk_config_row.pack(side=tk.LEFT, padx=(12, 0))
+
+        tk.Label(
+            self.chunk_config_row,
+            text="每",
+            bg=PANEL_BG,
+            fg=MUTED_TEXT,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self.file_chunk_entry = tk.Entry(
+            self.chunk_config_row,
+            textvariable=self.file_chunk_size_var,
+            width=8,
+            bg=SUBTLE_BG,
+            fg=TEXT_COLOR,
+            insertbackground=TEXT_COLOR,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            highlightcolor=HIGHLIGHT_COLOR,
+            font=("Consolas", 10),
+        )
+        self.file_chunk_entry.pack(side=tk.LEFT)
+
+        tk.Label(
+            self.chunk_config_row,
+            text="字节暂停",
+            bg=PANEL_BG,
+            fg=MUTED_TEXT,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(6, 4))
+
+        self.file_pause_entry = tk.Entry(
+            self.chunk_config_row,
+            textvariable=self.file_pause_ms_var,
+            width=8,
+            bg=SUBTLE_BG,
+            fg=TEXT_COLOR,
+            insertbackground=TEXT_COLOR,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+            highlightcolor=HIGHLIGHT_COLOR,
+            font=("Consolas", 10),
+        )
+        self.file_pause_entry.pack(side=tk.LEFT)
+
+        tk.Label(
+            self.chunk_config_row,
+            text="ms",
+            bg=PANEL_BG,
+            fg=MUTED_TEXT,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        progress_row = tk.Frame(self.file_mode_frame, bg=PANEL_BG)
+        progress_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+
+        tk.Label(
+            progress_row,
+            text="发送进度",
+            bg=PANEL_BG,
+            fg=MUTED_TEXT,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=0, sticky="w")
+
+        progress_value_row = tk.Frame(progress_row, bg=PANEL_BG, width=860, height=24)
+        progress_value_row.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        progress_value_row.grid_propagate(False)
+
+        self.file_progress_bar = ttk.Progressbar(
+            progress_value_row,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
+            length=520,
+            style="FileSend.Horizontal.TProgressbar",
+        )
+        self.file_progress_bar.place(x=0, y=2, width=520, height=20)
+
+        tk.Label(
+            progress_value_row,
+            textvariable=self.file_progress_var,
+            bg=PANEL_BG,
+            fg=TEXT_COLOR,
+            anchor="w",
+            font=("Consolas", 10),
+            width=32,
+        ).place(x=528, y=0, width=300, height=24)
+
+        action_row = tk.Frame(self.file_mode_frame, bg=PANEL_BG)
+        action_row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(14, 0))
+
+        self.send_file_button = tk.Button(
+            action_row,
+            textvariable=self.file_send_button_var,
+            command=self.toggle_binary_file_send,
+            bg=ACCENT_COLOR,
+            fg="white",
+            activebackground=ACCENT_ACTIVE,
+            activeforeground="white",
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            padx=12,
+            pady=6,
+            font=("Microsoft YaHei UI", 10),
+        )
+        self.send_file_button.pack(side=tk.RIGHT)
+
+        self.update_file_send_mode()
+        self.update_input_mode()
 
         self.quick_panel = ttk.LabelFrame(self.main_paned, text="快捷命令", style="Panel.TLabelframe", padding=10)
         self.quick_panel.configure(width=320)
@@ -494,6 +746,14 @@ class SerialToolApp:
             background=[("readonly", SUBTLE_BG)],
             foreground=[("readonly", TEXT_COLOR)],
         )
+        style.configure(
+            "FileSend.Horizontal.TProgressbar",
+            troughcolor=BUTTON_BG,
+            background=ACCENT_ACTIVE,
+            darkcolor=ACCENT_ACTIVE,
+            lightcolor=ACCENT_ACTIVE,
+            bordercolor=BORDER_COLOR,
+        )
 
     def refresh_ports(self) -> None:
         if list_ports is None:
@@ -562,6 +822,8 @@ class SerialToolApp:
 
     def close_port(self) -> None:
         self.reader_running = False
+        if self.file_send_in_progress:
+            self.file_send_stop_requested = True
 
         if self.serial_port is not None:
             try:
@@ -650,6 +912,174 @@ class SerialToolApp:
 
     def clear_input(self) -> None:
         self.input_text.delete("1.0", tk.END)
+
+    def update_input_mode(self) -> None:
+        mode = self.input_mode_var.get()
+        if mode == "file":
+            self.command_mode_frame.grid_remove()
+            self.file_mode_frame.grid()
+        else:
+            self.file_mode_frame.grid_remove()
+            self.command_mode_frame.grid()
+        self.save_config()
+
+    def update_file_send_mode(self) -> None:
+        if self.file_send_mode_var.get() == "chunked":
+            self.chunk_config_row.pack(side=tk.LEFT, padx=(12, 0))
+        else:
+            self.chunk_config_row.pack_forget()
+        self.save_config()
+
+    def choose_binary_file(self) -> None:
+        file_path = filedialog.askopenfilename(
+            title="选择要发送的二进制文件",
+            filetypes=[("All Files", "*.*")],
+        )
+        if not file_path:
+            return
+
+        self.selected_file_path = file_path
+        self.selected_file_var.set(self._format_file_path_for_display(file_path))
+        self.file_send_total_bytes = 0
+        self.file_progress_bar["value"] = 0
+        self.file_progress_var.set("已选择，等待发送")
+        self.save_config()
+
+    def toggle_binary_file_send(self) -> None:
+        if self.file_send_in_progress:
+            self.stop_binary_file_send()
+        else:
+            self.send_binary_file()
+
+    def send_binary_file(self) -> None:
+        if self.file_send_in_progress:
+            messagebox.showinfo("提示", "文件发送进行中，请等待当前任务完成")
+            return
+
+        if not self.serial_port or not self.serial_port.is_open:
+            messagebox.showwarning("未连接", "请先打开串口")
+            return
+
+        if not self.selected_file_path:
+            messagebox.showwarning("未选择文件", "请先选择要发送的文件")
+            return
+
+        chunk_size = 0
+        pause_ms = 0
+        if self.file_send_mode_var.get() == "chunked":
+            try:
+                chunk_size = int(self.file_chunk_size_var.get())
+                pause_ms = int(self.file_pause_ms_var.get())
+                if chunk_size <= 0 or pause_ms < 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("参数错误", "请填写有效的分块参数：字节数需大于 0，暂停可为 0")
+                return
+
+        self.file_send_in_progress = True
+        self.file_send_stop_requested = False
+        self.file_send_total_bytes = 0
+        self.choose_file_button.configure(state=tk.DISABLED)
+        self.file_send_button_var.set("停止发送")
+        self.send_file_button.configure(bg=BUTTON_BG, activebackground=SUBTLE_BG)
+        self.file_progress_var.set("0 B / 计算中...")
+        self.file_progress_bar["value"] = 0
+        mode_text = "分块发送" if self.file_send_mode_var.get() == "chunked" else "连续发送"
+        self.append_output(
+            f"[系统] 开始发送文件: {self.selected_file_path}，方式: {mode_text}"
+            + (f"，每 {chunk_size} 字节暂停 {pause_ms} ms" if self.file_send_mode_var.get() == "chunked" else "")
+            + "\n"
+        )
+        threading.Thread(
+            target=self._send_binary_file_worker,
+            args=(self.selected_file_path, chunk_size, pause_ms, self.file_send_mode_var.get()),
+            daemon=True,
+        ).start()
+
+    def _send_binary_file_worker(self, file_path: str, chunk_size: int, pause_ms: int, send_mode: str) -> None:
+        sent_bytes = 0
+        error_message = ""
+
+        try:
+            self.file_send_total_bytes = os.path.getsize(file_path)
+            with open(file_path, "rb") as file:
+                while True:
+                    if self.file_send_stop_requested:
+                        error_message = "用户手动停止发送"
+                        break
+
+                    read_size = chunk_size if send_mode == "chunked" else 4096
+                    chunk = file.read(read_size)
+                    if not chunk:
+                        break
+
+                    if not self.serial_port or not self.serial_port.is_open:
+                        error_message = "串口已关闭，文件发送已中止"
+                        break
+
+                    self.serial_port.write(chunk)
+                    sent_bytes += len(chunk)
+                    self.root.after(
+                        0,
+                        lambda current=sent_bytes: self._update_file_progress(current, self.file_send_total_bytes),
+                    )
+
+                    if send_mode == "chunked" and pause_ms > 0:
+                        time.sleep(pause_ms / 1000.0)
+        except (OSError, SerialException) as exc:
+            error_message = str(exc)
+
+        self.root.after(0, lambda: self._finish_binary_file_send(file_path, sent_bytes, error_message))
+
+    def _finish_binary_file_send(self, file_path: str, sent_bytes: int, error_message: str) -> None:
+        self.file_send_in_progress = False
+        self.file_send_stop_requested = False
+        self.choose_file_button.configure(state=tk.NORMAL)
+        self.file_send_button_var.set("发送文件")
+        self.send_file_button.configure(state=tk.NORMAL, bg=ACCENT_COLOR, activebackground=ACCENT_ACTIVE)
+
+        if error_message:
+            if error_message == "用户手动停止发送":
+                self.file_progress_var.set(f"已停止，已发送 {sent_bytes} B")
+                self.append_output(f"[系统] 文件发送已停止: {file_path}，已发送 {sent_bytes} 字节\n")
+            else:
+                self.file_progress_var.set(f"失败，已发送 {sent_bytes} B")
+                self.append_output(
+                    f"[系统] 文件发送失败: {file_path}，已发送 {sent_bytes} 字节，原因: {error_message}\n"
+                )
+            return
+
+        self.file_progress_bar["value"] = 100
+        self.file_progress_var.set(f"完成 {sent_bytes} / {self.file_send_total_bytes} B")
+        self.append_output(f"[系统] 文件发送完成: {file_path}，共发送 {sent_bytes} 字节\n")
+
+    def _update_file_progress(self, sent_bytes: int, total_bytes: int) -> None:
+        if total_bytes > 0:
+            percent = sent_bytes * 100 / total_bytes
+            self.file_progress_bar["value"] = percent
+            self.file_progress_var.set(f"{sent_bytes} / {total_bytes} B  ({percent:.1f}%)")
+        else:
+            self.file_progress_bar["value"] = 0
+            self.file_progress_var.set(f"{sent_bytes} B")
+
+    def _format_file_path_for_display(self, file_path: str, max_length: int = 42) -> str:
+        if not file_path:
+            return "未选择文件"
+        if len(file_path) <= max_length:
+            return file_path
+        keep = max_length - 3
+        head = max(keep // 2, 8)
+        tail = max(keep - head, 8)
+        return f"{file_path[:head]}...{file_path[-tail:]}"
+
+    def stop_binary_file_send(self) -> None:
+        if not self.file_send_in_progress:
+            return
+
+        self.file_send_stop_requested = True
+        self.file_send_button_var.set("正在停止...")
+        self.send_file_button.configure(state=tk.DISABLED)
+        self.file_progress_var.set("正在停止...")
 
     def save_current_log(self) -> None:
         log_path = filedialog.asksaveasfilename(
@@ -944,6 +1374,10 @@ class SerialToolApp:
             self.hex_display_var,
             self.autoscroll_var,
             self.show_sent_data_var,
+            self.input_mode_var,
+            self.file_send_mode_var,
+            self.file_chunk_size_var,
+            self.file_pause_ms_var,
         ]
         for var in vars_to_watch:
             var.trace_add("write", self._on_config_var_changed)
@@ -1052,6 +1486,12 @@ class SerialToolApp:
         self.hex_display_var.set(bool(config.get("hex_display", False)))
         self.autoscroll_var.set(bool(config.get("autoscroll", True)))
         self.show_sent_data_var.set(bool(config.get("show_sent_data", True)))
+        self.input_mode_var.set(config.get("input_mode", "command"))
+        self.file_send_mode_var.set(config.get("file_send_mode", "continuous"))
+        self.file_chunk_size_var.set(str(config.get("file_chunk_size", "500")))
+        self.file_pause_ms_var.set(str(config.get("file_pause_ms", "100")))
+        self.selected_file_path = str(config.get("selected_file_path", ""))
+        self.selected_file_var.set(self._format_file_path_for_display(self.selected_file_path))
 
         quick_panel_visible = bool(config.get("quick_panel_visible", False))
         input_panel_visible = bool(config.get("input_panel_visible", True))
@@ -1086,6 +1526,11 @@ class SerialToolApp:
             "hex_display": self.hex_display_var.get(),
             "autoscroll": self.autoscroll_var.get(),
             "show_sent_data": self.show_sent_data_var.get(),
+            "input_mode": self.input_mode_var.get(),
+            "file_send_mode": self.file_send_mode_var.get(),
+            "file_chunk_size": self.file_chunk_size_var.get(),
+            "file_pause_ms": self.file_pause_ms_var.get(),
+            "selected_file_path": self.selected_file_path,
             "quick_panel_visible": self.quick_panel_visible,
             "input_panel_visible": self.input_panel_visible,
             "quick_commands": [
